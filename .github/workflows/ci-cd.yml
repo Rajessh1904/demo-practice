@@ -1,0 +1,59 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build -t proedge/app:${{ github.sha }} -t proedge/app:latest .
+
+      - name: Run unit + integration tests
+        run: docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+      - name: Security scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: proedge/app:${{ github.sha }}
+          exit-code: "1"
+          severity: "CRITICAL"
+
+      - name: Generate SBOM
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image --format cyclonedx --output sbom.json proedge/app:${{ github.sha }}
+
+      - name: Push to registry
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USER }}" --password-stdin
+          docker push proedge/app:${{ github.sha }}
+          docker push proedge/app:latest
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploying to dev environment automatically..."
+
+  deploy-staging:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: staging   # requires manual approval in GitHub repo settings
+    steps:
+      - run: echo "Deploying to staging after manual approval..."
+
+  deploy-prod:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Deploying to production!"
